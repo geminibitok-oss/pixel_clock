@@ -28,78 +28,35 @@ jobs:
           cache: 'pip'
 
       - name: 🚀 Install PlatformIO Core
-        run: |
-          python -m pip install --upgrade pip
-          pip install --upgrade platformio
-
-      - name: 🔐 Prepare secrets.h
-        env:
-          WIFI_SSID: ${{ secrets.WIFI_SSID }}
-          WIFI_PASS: ${{ secrets.WIFI_PASS }}
-          MQTT_SERVER: ${{ secrets.MQTT_SERVER }}
-          MQTT_USER: ${{ secrets.MQTT_USER }}
-          MQTT_PASS: ${{ secrets.MQTT_PASS }}
-          OTA_USER: ${{ secrets.OTA_USER }}
-          OTA_PASS: ${{ secrets.OTA_PASS }}
-        run: |
-          mkdir -p include firmware/include firmware/src src
-
-          SSID="${WIFI_SSID:-YourWiFi}"
-          PASS="${WIFI_PASS:-YourPass}"
-          M_SERVER="${MQTT_SERVER:-192.168.1.180}"
-          M_USER="${MQTT_USER:-mqtt_user}"
-          M_PASS="${MQTT_PASS:-mqtt_pass}"
-          O_USER="${OTA_USER:-admin}"
-          O_PASS="${OTA_PASS:-admin123}"
-
-          for dir in include firmware/include firmware/src src; do
-            cat << EOF > "$dir/secrets.h"
-#pragma once
-constexpr const char* WIFI_SSID = "$SSID";
-constexpr const char* WIFI_PASS = "$PASS";
-constexpr const char* MQTT_SERVER = "$M_SERVER";
-constexpr int MQTT_PORT = 1883;
-constexpr const char* MQTT_USER = "$M_USER";
-constexpr const char* MQTT_PASS = "$M_PASS";
-constexpr const char* OTA_USER = "$O_USER";
-constexpr const char* OTA_PASS = "$O_PASS";
-EOF
-          done
-          echo "secrets.h prepared successfully"
+        run: pip install --upgrade platformio
 
       - name: ⚙️ Build Firmware (PlatformIO)
         run: |
-          if [ -f "platformio.ini" ]; then
-            pio run -e esp32dev
-          elif [ -f "firmware/platformio.ini" ]; then
-            cd firmware && pio run -e esp32dev
+          mkdir -p include firmware/include
+          if [ ! -f "include/secrets.h" ]; then
+            echo '#pragma once' > include/secrets.h
+            echo 'constexpr const char* WIFI_SSID = "YourWiFi";' >> include/secrets.h
+            echo 'constexpr const char* WIFI_PASS = "YourPass";' >> include/secrets.h
+            echo 'constexpr const char* MQTT_SERVER = "192.168.1.180";' >> include/secrets.h
+            echo 'constexpr int MQTT_PORT = 1883;' >> include/secrets.h
+            echo 'constexpr const char* MQTT_USER = "mqtt_user";' >> include/secrets.h
+            echo 'constexpr const char* MQTT_PASS = "mqtt_pass";' >> include/secrets.h
+            echo 'constexpr const char* OTA_USER = "admin";' >> include/secrets.h
+            echo 'constexpr const char* OTA_PASS = "admin123";' >> include/secrets.h
           fi
-
-      - name: 🔍 Locate Built Binaries
-        id: locate_bin
-        run: |
-          BIN_PATH=$(find .pio -name "firmware.bin" | head -n 1)
-          if [ -z "$BIN_PATH" ]; then
-            echo "::error::firmware.bin not found after build!"
-            exit 1
+          if [ ! -f "firmware/include/secrets.h" ]; then
+            cp include/secrets.h firmware/include/secrets.h
           fi
-          echo "Found firmware.bin at: $BIN_PATH"
-          echo "bin_path=$BIN_PATH" >> "$GITHUB_OUTPUT"
-
-          BOOTLOADER_PATH=$(find .pio -name "bootloader.bin" | head -n 1)
-          echo "bootloader_path=$BOOTLOADER_PATH" >> "$GITHUB_OUTPUT"
-
-          PARTITIONS_PATH=$(find .pio -name "partitions.bin" | head -n 1)
-          echo "partitions_path=$PARTITIONS_PATH" >> "$GITHUB_OUTPUT"
+          pio run -e esp32dev
 
       - name: 📦 Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: esp32-pixel-clock-firmware
           path: |
-            ${{ steps.locate_bin.outputs.bin_path }}
-            ${{ steps.locate_bin.outputs.partitions_path }}
-            ${{ steps.locate_bin.outputs.bootloader_path }}
+            .pio/build/esp32dev/firmware.bin
+            .pio/build/esp32dev/partitions.bin
+            .pio/build/esp32dev/bootloader.bin
           if-no-files-found: error
           retention-days: 14
 
@@ -114,9 +71,9 @@ EOF
           echo "Publishing release with tag: $TAG"
 
           gh release create "$TAG" \
-            "${{ steps.locate_bin.outputs.bin_path }}" \
-            "${{ steps.locate_bin.outputs.partitions_path }}" \
-            "${{ steps.locate_bin.outputs.bootloader_path }}" \
+            .pio/build/esp32dev/firmware.bin \
+            .pio/build/esp32dev/partitions.bin \
+            .pio/build/esp32dev/bootloader.bin \
             --title "Release $TAG" \
             --notes "Свежая сборка прошивки firmware.bin для ESP32 Pixel Clock" \
             --clobber || echo "Release updated or created"

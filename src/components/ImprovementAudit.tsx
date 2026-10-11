@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   ShieldAlert, Clock, Database, RefreshCw, 
-  Home, Cpu, AlertTriangle, CheckCircle2, ChevronRight, Copy, Check
+  Home, Cpu, AlertTriangle, CheckCircle2, ChevronRight, Copy, Check, Wifi
 } from 'lucide-react';
 
 export const ImprovementAudit: React.FC = () => {
@@ -202,6 +202,36 @@ otadata,  data, ota,     0xe000,  0x2000,
 app0,     app,  ota_0,   0x10000, 0x1E0000,
 app1,     app,  ota_1,   0x1F0000,0x1E0000,
 spiffs,   data, spiffs,  0x3D0000,0x20000,`,
+    },
+    {
+      id: 'wifi_ap_auto_off',
+      title: 'Сохранение Wi-Fi при OTA и точка доступа с авто-отключением',
+      priority: 'HIGH',
+      icon: <Wifi className="w-5 h-5 text-emerald-400" />,
+      tag: 'Wi-Fi & Сеть',
+      summary: 'При обновлении с GitHub Wi-Fi не стирается, а при чистой прошивке AP отключается сразу после подключения к роутеру.',
+      problem: `1. При сборке на GitHub Actions secrets.h генерируется без паролей (пустой). Если Wi-Fi не был зафиксирован в NVS Flash, часы после OTA с GitHub теряли связь.
+2. При полной чистой прошивке (USB / esptool / чистый Flash) пользователь не имеет способа легко настроить Wi-Fi без перекомпиляции кода.
+3. В старом коде точка доступа после запуска продолжала висеть в эфире и не отключалась даже после успешного подключения к домашнему роутеру, создавая помехи и уязвимость.`,
+      solution: `1. Настройки Wi-Fi навсегда сохраняются в энергонезависимую память NVS (Preferences). При обновлении с GitHub OTA перезаписывается только раздел app, а сектор NVS остается нетронутым!
+2. При чистой прошивке или недоступности сети ESP32 поднимает точку доступа PixelClock-Setup (192.168.4.1) с Captive Portal и встроенным сканером окружающих сетей.
+3. Как только часы успешно подключаются к домашней сети — функция onWifiConnected() НЕМЕДЛЕННО выключает точку доступа (WiFi.softAPdisconnect(true); WiFi.mode(WIFI_STA);), освобождая радиоканал!`,
+      codeBefore: `// Старый подход:
+void connectWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.softAP("MatrixSetup", OTA_PASS); // Точка висит бесконечно!
+  }
+}`,
+      codeAfter: `// Новый подход:
+void onWifiConnected() {
+  if (isApMode) {
+    dnsServer.stop();
+    WiFi.softAPdisconnect(true); // ✅ Точка доступа выключается сразу!
+    WiFi.mode(WIFI_STA);        // ✅ Только чистый клиент домашней сети
+    isApMode = false;
+  }
+  configTime(...); // Запуск NTP
+}`,
     },
   ];
 

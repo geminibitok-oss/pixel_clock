@@ -118,25 +118,35 @@ export const GitHubOtaGuide: React.FC = () => {
                 <span>Смещение / Размер</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-emerald-400">app0 (ota_0)</span>
-                <span>Текущая рабочая прошивка (версия v7.0)</span>
-                <span className="text-slate-500">0x10000 / 1.95 MB</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-cyan-400">app1 (ota_1)</span>
-                <span>Сюда загружается новая версия v7.1 во время обновления</span>
-                <span className="text-slate-500">0x1F0000 / 1.95 MB</span>
+                <span className="text-amber-400 font-bold">nvs</span>
+                <span>Настройки Wi-Fi, MQTT, цвета (НЕ стираются при OTA!)</span>
+                <span className="text-slate-500">0x9000 / 20 KB</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-purple-400">otadata</span>
                 <span>Служебный сектор выбора активного слота</span>
                 <span className="text-slate-500">0xe000 / 8 KB</span>
               </div>
+              <div className="flex items-center justify-between">
+                <span className="text-emerald-400">app0 (ota_0)</span>
+                <span>Текущая рабочая прошивка</span>
+                <span className="text-slate-500">0x10000 / 1.95 MB</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-cyan-400">app1 (ota_1)</span>
+                <span>Сюда загружается новая версия при обновлении с GitHub</span>
+                <span className="text-slate-500">0x1F0000 / 1.95 MB</span>
+              </div>
             </div>
 
-            <p className="text-xs text-slate-400">
-              * Если во время скачивания пропадет питание, сектор <b className="text-slate-300">otadata</b> останется указывать на старый слот <b className="text-slate-300">app0</b>. Часы включатся и продолжат работать как ни в чем не бывало!
-            </p>
+            <div className="space-y-1.5 pt-1 text-xs text-slate-300">
+              <p>
+                🔒 <b className="text-emerald-400">Почему настройки Wi-Fi не стираются при OTA:</b> Обновление с GitHub пишет байты исключительно в свободный слот <code className="text-slate-200 font-mono">app0</code> или <code className="text-slate-200 font-mono">app1</code>. Раздел <b className="text-amber-400 font-mono">nvs</b> физически находится по другому адресу памяти и никогда не затрагивается!
+              </p>
+              <p>
+                📶 <b className="text-cyan-400">При полной чистой прошивке (Full Flash):</b> Если на чистом ESP32 нет сохраненного Wi-Fi, часы поднимают точку доступа <code className="text-cyan-300 font-mono">PixelClock-Setup</code> (192.168.4.1). Как только вы ввели Wi-Fi и часы подключились к домашней сети — <b>точка доступа немедленно отключается</b>!
+              </p>
+            </div>
           </div>
         </div>
       )}

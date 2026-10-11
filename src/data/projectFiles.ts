@@ -52,22 +52,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
-
-      - name: 📦 Cache PlatformIO & packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.platformio
-            .pio
-          key: \${{ runner.os }}-platformio-\${{ hashFiles('**/platformio.ini') }}
-          restore-keys: |
-            \${{ runner.os }}-platformio-
 
       - name: 🚀 Install PlatformIO Core
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade platformio
+
+      - name: 🧩 Ensure Partitions Table Exists
+        run: |
+          if [ ! -f "min_spiffs.csv" ] && [ ! -f "firmware/min_spiffs.csv" ]; then
+            echo "Creating fallback min_spiffs.csv partition table..."
+            echo "# Name,   Type, SubType, Offset,  Size, Flags" > min_spiffs.csv
+            echo "nvs,      data, nvs,     0x9000,  0x5000," >> min_spiffs.csv
+            echo "otadata,  data, ota,     0xe000,  0x2000," >> min_spiffs.csv
+            echo "app0,     app,  ota_0,   0x10000, 0x1E0000," >> min_spiffs.csv
+            echo "app1,     app,  ota_1,   0x1F0000,0x1E0000," >> min_spiffs.csv
+            echo "spiffs,   data, spiffs,  0x3D0000,0x30000," >> min_spiffs.csv
+          fi
 
       - name: 🔐 Prepare secrets.h
         env:
@@ -90,17 +91,15 @@ jobs:
           O_PASS="\${OTA_PASS:-admin123}"
 
           for dir in include firmware/include firmware/src src; do
-            cat << EOF > "$dir/secrets.h"
-#pragma once
-constexpr const char* WIFI_SSID = "$SSID";
-constexpr const char* WIFI_PASS = "$PASS";
-constexpr const char* MQTT_SERVER = "$M_SERVER";
-constexpr int MQTT_PORT = 1883;
-constexpr const char* MQTT_USER = "$M_USER";
-constexpr const char* MQTT_PASS = "$M_PASS";
-constexpr const char* OTA_USER = "$O_USER";
-constexpr const char* OTA_PASS = "$O_PASS";
-EOF
+            echo "#pragma once" > "$dir/secrets.h"
+            echo "constexpr const char* WIFI_SSID = \"$SSID\";" >> "$dir/secrets.h"
+            echo "constexpr const char* WIFI_PASS = \"$PASS\";" >> "$dir/secrets.h"
+            echo "constexpr const char* MQTT_SERVER = \"$M_SERVER\";" >> "$dir/secrets.h"
+            echo "constexpr int MQTT_PORT = 1883;" >> "$dir/secrets.h"
+            echo "constexpr const char* MQTT_USER = \"$M_USER\";" >> "$dir/secrets.h"
+            echo "constexpr const char* MQTT_PASS = \"$M_PASS\";" >> "$dir/secrets.h"
+            echo "constexpr const char* OTA_USER = \"$O_USER\";" >> "$dir/secrets.h"
+            echo "constexpr const char* OTA_PASS = \"$O_PASS\";" >> "$dir/secrets.h"
           done
           echo "secrets.h prepared successfully"
 
@@ -150,13 +149,23 @@ EOF
           fi
           echo "Publishing release with tag: $TAG"
 
-          gh release create "$TAG" \\
+          # 1. Try to create release with assets
+          if gh release create "$TAG" \\
             "\${{ steps.locate_bin.outputs.bin_path }}" \\
             "\${{ steps.locate_bin.outputs.partitions_path }}" \\
             "\${{ steps.locate_bin.outputs.bootloader_path }}" \\
             --title "Release $TAG" \\
             --notes "Свежая сборка прошивки firmware.bin для ESP32 Pixel Clock" \\
-            --clobber || echo "Release updated or created"
+            --clobber; then
+            echo "Release $TAG created successfully!"
+          else
+            echo "Release $TAG already exists, updating assets..."
+            gh release upload "$TAG" \\
+              "\${{ steps.locate_bin.outputs.bin_path }}" \\
+              "\${{ steps.locate_bin.outputs.partitions_path }}" \\
+              "\${{ steps.locate_bin.outputs.bootloader_path }}" \\
+              --clobber
+          fi
 `
   },
   {
@@ -352,9 +361,10 @@ private:
     filename: 'main.cpp (Улучшенная версия)',
     path: 'src/main.cpp',
     language: 'cpp',
-    description: 'Обновленная прошивка: автономный NTP, GitHub OTA, защита NVS, Watchdog и Home Assistant Update entity',
+    description: 'Обновленная прошивка: защита Wi-Fi в NVS при OTA с GitHub, авто-отключение точки доступа при подключении, Captive Portal, автономный NTP и Home Assistant Update entity',
     content: `#include <Arduino.h>
 #include <ArduinoOTA.h>
+#include <DNSServer.h>
 #include <FastLED.h>
 #include <Preferences.h>
 #include <PubSubClient.h>
@@ -370,11 +380,14 @@ private:
 
 constexpr const char* DEVICE_NAME = "esp32_matrix";
 constexpr const char* DEVICE_FRIENDLY_NAME = "Matrix Display";
-constexpr const char* FIRMWARE_VERSION = "7.1"; // Обновленная версия
+constexpr const char* FIRMWARE_VERSION = "7.2"; // Обновленная версия с защитой NVS и авто-отключением AP
 
 // Репозиторий GitHub для OTA обновлений
 constexpr const char* GITHUB_OWNER = "geminibitok-oss";
 constexpr const char* GITHUB_REPO  = "pixel_clock";
+
+// Имя аварийной точки доступа при чистой прошивке
+constexpr const char* AP_SSID = "PixelClock-Setup";
 
 constexpr uint8_t LED_PIN = 18;
 constexpr uint8_t WIDTH = 32;
@@ -400,6 +413,12 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 WebServer server(80);
 Preferences prefs;
+
+// DNS-сервер для перехвата запросов Captive Portal в режиме точки доступа (порт 53)
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
+bool isApMode = false;
+unsigned long lastWifiLossTime = 0;
 
 String cfgWifiSsid;
 String cfgWifiPass;
@@ -574,14 +593,39 @@ void updateLocalTime() {
   }
 }
 
+// Загрузка настроек с гарантированной защитой Wi-Fi от сброса при сборке с GitHub
 void loadSettings() {
   prefs.begin("matrix", false);
-  cfgWifiSsid = prefs.getString("wifi_ssid", WIFI_SSID);
-  cfgWifiPass = prefs.getString("wifi_pass", WIFI_PASS);
+
+  // 1. Считываем сохраненные параметры сети из защищенного NVS сектора Flash
+  cfgWifiSsid = prefs.getString("wifi_ssid", "");
+  cfgWifiPass = prefs.getString("wifi_pass", "");
+
+  // 2. КРИТИЧНО: Защита настроек Wi-Fi при обновлении прошивки с GitHub Actions!
+  // В GitHub Actions компилируется общий бинарник с пустым secrets.h (чтобы не светить пароли).
+  // Если в NVS пока нет данных, но в secrets.h прописаны дефолты (например, первая компиляция пользователем),
+  // мы СРАЗУ же записываем их в NVS на постоянное хранение!
+  // После этого любые обновления OTA с GitHub никогда не затрут Wi-Fi!
+  if (cfgWifiSsid.length() == 0 && strlen(WIFI_SSID) > 0) {
+    cfgWifiSsid = String(WIFI_SSID);
+    cfgWifiPass = String(WIFI_PASS);
+    prefs.putString("wifi_ssid", cfgWifiSsid);
+    prefs.putString("wifi_pass", cfgWifiPass);
+    Serial.println("[NVS] Учетные данные Wi-Fi из secrets.h сохранены в энергонезависимую память NVS");
+  }
+
   cfgMqttServer = prefs.getString("mqtt_host", MQTT_SERVER);
   cfgMqttPort = prefs.getInt("mqtt_port", MQTT_PORT);
   cfgMqttUser = prefs.getString("mqtt_user", MQTT_USER);
   cfgMqttPass = prefs.getString("mqtt_pass", MQTT_PASS);
+
+  if (!prefs.isKey("mqtt_host") && strlen(MQTT_SERVER) > 0) {
+    prefs.putString("mqtt_host", cfgMqttServer);
+    prefs.putInt("mqtt_port", cfgMqttPort);
+    prefs.putString("mqtt_user", cfgMqttUser);
+    prefs.putString("mqtt_pass", cfgMqttPass);
+  }
+
   isMusicMode = prefs.getBool("music_mode", false);
   autoBrightness = prefs.getBool("auto_bri", true);
   manualBrightness = prefs.getUChar("manual_bri", 80);
@@ -602,6 +646,7 @@ void saveNetworkSettings() {
   prefs.putInt("mqtt_port", cfgMqttPort);
   prefs.putString("mqtt_user", cfgMqttUser);
   prefs.putString("mqtt_pass", cfgMqttPass);
+  Serial.println("[NVS] Сетевые параметры зафиксированы в Flash");
 }
 
 // Защита Flash-памяти: вызывается только с задержкой или при реальном изменении!
@@ -676,7 +721,69 @@ void checkGithubReleases() {
   }
 }
 
-// ... Отрисовка погоды, иконки ...
+// ======================== УПРАВЛЕНИЕ ТОЧКОЙ ДОСТУПА И WI-FI ========================
+
+// Обработчик успешного подключения к домашней/основной сети:
+// КРИТИЧЕСКОЕ ТРЕБОВАНИЕ: КАК ТОЛЬКО ПОДКЛЮЧИЛИСЬ К ОСНОВНОЙ СЕТИ — ТОЧКА ДОСТУПА ПОЛНОСТЬЮ ОТКЛЮЧАЕТСЯ!
+void onWifiConnected() {
+  lastWifiLossTime = 0;
+  Serial.printf("[WiFi] Успешное подключение к основной сети! IP: %s\n", WiFi.localIP().toString().c_str());
+
+  if (isApMode) {
+    Serial.println("[WiFi] Часы подключились к роутеру. Автоматически отключаем точку доступа...");
+    dnsServer.stop();
+    WiFi.softAPdisconnect(true); // Останавливает AP и выключает beacon
+    WiFi.mode(WIFI_STA);         // Переключаем чип в чистый STA режим без AP
+    isApMode = false;
+    Serial.println("[WiFi] Точка доступа " + String(AP_SSID) + " полностью отключена.");
+  }
+
+  // Настройка автономного времени по протоколу NTP
+  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, "pool.ntp.org", "time.google.com");
+  updateLocalTime();
+}
+
+// Запуск точки доступа для первичной настройки (после полной чистой прошивки)
+void startConfigPortal() {
+  if (isApMode) return;
+  Serial.println("[WiFi] Запуск точки доступа для настройки...");
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(AP_SSID); // Открытая точка без пароля для удобного первого подключения со смартфона
+  delay(100);
+
+  // Captive Portal: перенаправляем любые DNS-запросы на 192.168.4.1
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+  isApMode = true;
+  Serial.printf("[WiFi] Точка доступа активна: '%s'. IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+}
+
+void connectWiFi() {
+  WiFi.persistent(true); // Сохранять состояние в системном NVS ESP32
+
+  if (cfgWifiSsid.length() > 0) {
+    Serial.printf("[WiFi] Подключение к основной сети: %s...\n", cfgWifiSsid.c_str());
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(cfgWifiSsid.c_str(), cfgWifiPass.c_str());
+
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 12000) {
+      delay(250);
+      Serial.print(".");
+    }
+    Serial.println();
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    onWifiConnected();
+  } else {
+    // При чистой прошивке (нет сохраненного Wi-Fi) или недоступности сети поднимаем точку доступа
+    Serial.println("[WiFi] Основная сеть недоступна или не настроена. Создаем точку доступа для настройки...");
+    lastWifiLossTime = millis();
+    startConfigPortal();
+  }
+}
+
+// Отрисовка погоды и графики
 void drawCloudBase(int x, int y, bool darkBase) {
   CRGB white = CRGB(200, 200, 200);
   CRGB grayLight = CRGB(140, 140, 155);
@@ -781,6 +888,8 @@ String htmlEscape(String s) {
 }
 
 bool ensureAuth() {
+  // В режиме точки доступа для первичной настройки вход свободный, чтобы не блокировать пользователя!
+  if (isApMode) return true;
   if (server.authenticate(OTA_USER, OTA_PASS)) return true;
   server.requestAuthentication();
   return false;
@@ -802,51 +911,95 @@ void handleRoot() {
   if (!ensureAuth()) return;
   String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
   String selectedMode = isMusicMode ? "music" : "weather";
-  
+
   String html = F("<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
                   "<title>Настройки часов</title><style>"
                   "body{font-family:system-ui,Arial,sans-serif;margin:24px;max-width:760px;background:#101418;color:#eef2f4}"
                   "fieldset{border:1px solid #33414a;border-radius:8px;margin:0 0 16px;padding:16px}"
                   "label{display:block;margin:10px 0 4px;color:#aebbc3}input,select{box-sizing:border-box;width:100%;padding:10px;border-radius:6px;border:1px solid #54636c;background:#172027;color:#fff}"
                   "input[type=checkbox]{width:auto}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.btn{background:#24a0ed;color:white;border:0;padding:12px 16px;border-radius:6px;cursor:pointer}.btn-gh{background:#238636}.muted{color:#9aa7af}"
+                  ".banner-ap{background:#1e293b;border:1px solid #38bdf8;padding:14px;border-radius:8px;margin-bottom:16px}"
                   "a{color:#69c0ff}@media(max-width:640px){.row{grid-template-columns:1fr}body{margin:14px}}</style></head><body>"
                   "<h1>Настройки часов</h1>");
-  html += "<p class='muted'>IP: " + ip + " | Текущая версия: v" + String(FIRMWARE_VERSION) + "</p>";
-  
-  // Блок OTA обновления с GitHub
-  html += "<fieldset><legend>Обновление по воздуху (GitHub OTA)</legend>";
-  html += "<p>Текущая версия: <b>v" + String(FIRMWARE_VERSION) + "</b>";
-  if (latestGithubVersion.length() > 0) {
-    html += " | Доступна на GitHub: <b>v" + latestGithubVersion + "</b>";
+
+  if (isApMode) {
+    html += "<div class='banner-ap'>"
+            "<h3 style='margin:0 0 8px 0;color:#38bdf8'>📶 Режим настройки Wi-Fi (Точка доступа " + String(AP_SSID) + ")</h3>"
+            "<p style='margin:0;font-size:14px;color:#cbd5e1'>"
+            "Введите имя и пароль вашей домашней Wi-Fi сети. <b>Как только часы успешно подключатся к роутеру, эта точка доступа автоматически выключится!</b>"
+            "</p></div>";
   }
-  html += "</p>";
-  html += "<div style='display:flex;gap:10px'>";
-  html += "<a href='/check-update' class='btn'>Проверить обновления</a>";
-  if (latestGithubVersion.length() > 0 && latestGithubVersion != FIRMWARE_VERSION) {
-    html += "<a href='/start-update' class='btn btn-gh' onclick='return confirm(\"Начать обновление с GitHub?\")'>Обновить до v" + latestGithubVersion + "</a>";
+
+  html += "<p class='muted'>IP: " + ip + " | Прошивка: v" + String(FIRMWARE_VERSION) + (isApMode ? " [Режим AP]" : " [Подключено к Wi-Fi]") + "</p>";
+
+  // Блок OTA обновления с GitHub (активен при наличии интернета)
+  if (WiFi.status() == WL_CONNECTED) {
+    html += "<fieldset><legend>Обновление по воздуху (GitHub OTA)</legend>";
+    html += "<p>Текущая версия: <b>v" + String(FIRMWARE_VERSION) + "</b>";
+    if (latestGithubVersion.length() > 0) {
+      html += " | Доступна на GitHub: <b>v" + latestGithubVersion + "</b>";
+    }
+    html += "</p>";
+    html += "<div style='display:flex;gap:10px;flex-wrap:wrap'>";
+    html += "<a href='/check-update' class='btn'>Проверить обновления</a>";
+    if (latestGithubVersion.length() > 0 && latestGithubVersion != FIRMWARE_VERSION) {
+      html += "<a href='/start-update' class='btn btn-gh' onclick='return confirm(\"Начать обновление с GitHub?\")'>Обновить до v" + latestGithubVersion + "</a>";
+    }
+    html += "<a href='/update' style='margin-left:auto;align-self:center'>Ручная загрузка .bin</a>";
+    html += "</div></fieldset>";
   }
-  html += "<a href='/update' style='margin-left:auto;align-self:center'>Ручная загрузка .bin</a>";
-  html += "</div></fieldset>";
 
   html += "<form method='POST' action='/save'>";
-  html += "<fieldset><legend>Сеть</legend>";
-  html += "<label>WiFi SSID</label><input name='wifi_ssid' value=\"" + htmlEscape(cfgWifiSsid) + "\">";
-  html += "<label>Пароль WiFi</label><input name='wifi_pass' type='password' value=\"" + htmlEscape(cfgWifiPass) + "\">";
-  html += "<div class='row'><div><label>Адрес MQTT</label><input name='mqtt_host' value=\"" + htmlEscape(cfgMqttServer) + "\"></div>";
+  html += "<fieldset><legend>Сеть Wi-Fi и MQTT</legend>";
+  html += "<label>Имя домашней Wi-Fi сети (SSID)</label><input name='wifi_ssid' id='ssid' value=\"" + htmlEscape(cfgWifiSsid) + "\" placeholder='Название Wi-Fi роутера' required>";
+  html += "<div style='margin-top:6px'><button type='button' class='btn' style='padding:6px 12px;font-size:12px' onclick='scanWifi()'>🔍 Сканировать сети поблизости</button></div>";
+  html += "<label>Пароль от Wi-Fi</label><input name='wifi_pass' type='password' value=\"" + htmlEscape(cfgWifiPass) + "\" placeholder='Пароль домашней сети'>";
+  html += "<div class='row'><div><label>Адрес MQTT брокера</label><input name='mqtt_host' value=\"" + htmlEscape(cfgMqttServer) + "\"></div>";
   html += "<div><label>Порт MQTT</label><input name='mqtt_port' type='number' value=\"" + String(cfgMqttPort) + "\"></div></div>";
   html += "<div class='row'><div><label>Пользователь MQTT</label><input name='mqtt_user' value=\"" + htmlEscape(cfgMqttUser) + "\"></div>";
   html += "<div><label>Пароль MQTT</label><input name='mqtt_pass' type='password' value=\"" + htmlEscape(cfgMqttPass) + "\"></div></div></fieldset>";
-  html += "<fieldset><legend>Экран</legend>";
+
+  html += "<fieldset><legend>Экран и часы</legend>";
   html += "<div class='row'><div><label>Режим</label><select name='mode'>" + optionTagLabel("weather", selectedMode, "Погода") + optionTagLabel("music", selectedMode, "Бегущая строка") + "</select></div>";
   html += "<div><label>Скорость строки</label><input name='speed' type='range' min='0' max='100' value='" + String(userSpeedVal) + "'></div></div>";
-  html += "<label><input name='auto_bri' type='checkbox' value='1'" + String(autoBrightness ? " checked" : "") + "> Автояркость</label>";
+  html += "<label><input name='auto_bri' type='checkbox' value='1'" + String(autoBrightness ? " checked" : "") + "> Автояркость (фоторезистор)</label>";
   html += "<label>Ручная яркость</label><input name='manual_bri' type='range' min='10' max='255' value='" + String(manualBrightness) + "'>";
   html += "<div class='row'><div><label>Цвет часов</label><select name='col_clock'>" + colorOptions(colorClockName) + "</select></div>";
   html += "<div><label>Цвет текста</label><select name='col_text'>" + colorOptions(colorTextName) + "</select></div></div>";
   html += "<label>Цвет погоды</label><select name='col_weather'>" + colorOptions(colorWeatherName) + "</select>";
   html += "<label>Текст сообщения</label><input name='message' value=\"" + htmlEscape(scrollText) + "\"></fieldset>";
-  html += "<button class='btn' type='submit'>Сохранить</button></form></body></html>";
-  server.send(200, "text/html", html);
+  html += "<button class='btn' type='submit'>Сохранить и подключиться</button></form>";
+
+  html += "<script>"
+          "function scanWifi(){"
+          "  fetch('/scan').then(r=>r.json()).then(data=>{"
+          "    if(!data.length){ alert('Сети не найдены'); return; }"
+          "    let list = 'Найденные сети:\\n' + data.map(n=>n.ssid + ' (' + n.rssi + ' dBm)').join('\\n');"
+          "    let pick = prompt(list + '\\n\\nВведите или скопируйте имя сети:');"
+          "    if(pick) document.getElementById('ssid').value = pick;"
+          "  }).catch(()=>alert('Ошибка сканирования'));"
+          "}"
+          "</script></body></html>";
+
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+// JSON список найденных Wi-Fi сетей
+void handleScan() {
+  int n = WiFi.scanNetworks();
+  String json = "[";
+  for (int i = 0; i < n; ++i) {
+    if (i > 0) json += ",";
+    json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]";
+  server.send(200, "application/json", json);
+}
+
+// Перенаправление Captive Portal (iOS, Android, Windows) на главную страницу настроек
+void handleCaptiveRedirect() {
+  server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+  server.send(302, "text/plain", "");
 }
 
 void handleCheckUpdate() {
@@ -865,8 +1018,6 @@ void handleStartUpdate() {
 
 void handleSave() {
   if (!ensureAuth()) return;
-  String oldWifi = cfgWifiSsid + cfgWifiPass;
-  String oldMqtt = cfgMqttServer + String(cfgMqttPort) + cfgMqttUser + cfgMqttPass;
 
   cfgWifiSsid = server.arg("wifi_ssid");
   cfgWifiPass = server.arg("wifi_pass");
@@ -874,13 +1025,13 @@ void handleSave() {
   cfgMqttPort = constrain(server.arg("mqtt_port").toInt(), 1, 65535);
   cfgMqttUser = server.arg("mqtt_user");
   cfgMqttPass = server.arg("mqtt_pass");
-  isMusicMode = server.arg("mode") == "music";
-  userSpeedVal = server.arg("speed").toInt();
+  if (server.hasArg("mode")) isMusicMode = (server.arg("mode") == "music");
+  if (server.hasArg("speed")) userSpeedVal = server.arg("speed").toInt();
   autoBrightness = server.hasArg("auto_bri");
-  manualBrightness = constrain(server.arg("manual_bri").toInt(), 10, 255);
-  colorClockName = server.arg("col_clock");
-  colorTextName = server.arg("col_text");
-  colorWeatherName = server.arg("col_weather");
+  if (server.hasArg("manual_bri")) manualBrightness = constrain(server.arg("manual_bri").toInt(), 10, 255);
+  if (server.hasArg("col_clock")) colorClockName = server.arg("col_clock");
+  if (server.hasArg("col_text")) colorTextName = server.arg("col_text");
+  if (server.hasArg("col_weather")) colorWeatherName = server.arg("col_weather");
   if (server.hasArg("message")) {
     scrollText = server.arg("message");
     scrollX = WIDTH;
@@ -889,16 +1040,24 @@ void handleSave() {
   applyColorSettings();
   applySpeedSetting();
   saveNetworkSettings();
-  
-  // Принудительно сбрасываем dirty-флаг и пишем сразу, т.к. пользователь нажал "Сохранить"
+
   displaySettingsDirty = true;
   commitDisplaySettings();
 
-  bool restartNeeded = (oldWifi != cfgWifiSsid + cfgWifiPass) ||
-                       (oldMqtt != cfgMqttServer + String(cfgMqttPort) + cfgMqttUser + cfgMqttPass);
-  server.send(200, "text/html; charset=utf-8", restartNeeded ? "Сохранено. Перезагрузка..." : "Сохранено. <a href='/'>Назад</a>");
-  delay(200);
-  if (restartNeeded) ESP.restart();
+  String html = F("<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                  "<title>Сохранено</title><style>body{background:#101418;color:#fff;font-family:sans-serif;text-align:center;padding:40px}a{color:#69c0ff}</style></head><body>"
+                  "<h2>Настройки сохранены!</h2>"
+                  "<p>Часы подключаются к сети <b>");
+  html += htmlEscape(cfgWifiSsid);
+  html += F("</b>...</p><p style='color:#94a3b8'>Как только часы подключатся к вашему роутеру, точка доступа <b>");
+  html += AP_SSID;
+  html += F("</b> будет автоматически выключена.</p></body></html>");
+
+  server.send(200, "text/html; charset=utf-8", html);
+  delay(500);
+
+  // Начинаем подключение к новой сети
+  WiFi.begin(cfgWifiSsid.c_str(), cfgWifiPass.c_str());
 }
 
 void handleUpdatePage() {
@@ -938,10 +1097,19 @@ void handleUpdateUpload() {
 void setupWebServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+  server.on("/scan", HTTP_GET, handleScan);
   server.on("/check-update", HTTP_GET, handleCheckUpdate);
   server.on("/start-update", HTTP_GET, handleStartUpdate);
   server.on("/update", HTTP_GET, handleUpdatePage);
   server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
+
+  // Перехват Captive Portal (автоматическое всплывающее окно входа на Android/iOS/Windows)
+  server.on("/generate_204", HTTP_GET, handleCaptiveRedirect);
+  server.on("/gen_204", HTTP_GET, handleCaptiveRedirect);
+  server.on("/hotspot-detect.html", HTTP_GET, handleCaptiveRedirect);
+  server.on("/ncsi.txt", HTTP_GET, handleCaptiveRedirect);
+  server.on("/connecttest.txt", HTTP_GET, handleCaptiveRedirect);
+
   server.begin();
 }
 
@@ -981,8 +1149,8 @@ void publishDiscovery() {
   publishConfig("select", "color_text", "{\"name\":\"Color Text\",\"uniq_id\":\"" + id + "_col_t\",\"cmd_t\":\"matrix/color/text/set\",\"stat_t\":\"matrix/color/text/state\",\"options\":" + colors + "," + dev + "," + avail + "}");
   publishConfig("select", "color_weather", "{\"name\":\"Color Weather\",\"uniq_id\":\"" + id + "_col_w\",\"cmd_t\":\"matrix/color/weather/set\",\"stat_t\":\"matrix/color/weather/state\",\"options\":" + colors + "," + dev + "," + avail + "}");
   publishConfig("button", "restart", "{\"name\":\"Restart\",\"uniq_id\":\"" + id + "_restart\",\"cmd_t\":\"matrix/restart/set\",\"payload_press\":\"PRESS\",\"dev_cla\":\"restart\"," + dev + "," + avail + "}");
-  
-  // НОВАЯ СУЩНОСТЬ: Home Assistant Update Entity для обновления с GitHub!
+
+  // Home Assistant Update Entity для обновления с GitHub!
   publishConfig("update", "firmware", "{\"name\":\"Firmware Update\",\"uniq_id\":\"" + id + "_fw_update\",\"cmd_t\":\"matrix/ota/update_cmd\",\"stat_t\":\"matrix/update/state\",\"latest_ver_t\":\"matrix/update/latest_version\",\"installed_ver\":\"" + String(FIRMWARE_VERSION) + "\",\"pl_inst\":\"INSTALL\"," + dev + "," + avail + "}");
 
   client.subscribe("matrix/text/set");
@@ -1036,10 +1204,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     client.publish("matrix/mode/state", isMusicMode ? "music" : "weather", true);
     markSettingsDirty();
   } else if (t == "matrix/time/set") {
-    displayTime = msg; // Внешняя синхронизация времени (если NTP недоступен)
+    displayTime = msg;
   } else if (t == "matrix/temp/set") {
     weatherTemp = msg;
-    // Температуру не пишем во Flash при каждом градусе!
   } else if (t == "matrix/speed/set") {
     userSpeedVal = msg.toInt();
     applySpeedSetting();
@@ -1094,22 +1261,6 @@ void reconnectMqtt() {
   }
 }
 
-void connectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(cfgWifiSsid.c_str(), cfgWifiPass.c_str());
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-    delay(200);
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP("MatrixSetup", OTA_PASS);
-  } else {
-    // Настраиваем автономный NTP сразу после подключения к Wi-Fi!
-    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, "pool.ntp.org", "time.google.com");
-  }
-}
-
 void setupOta() {
   ArduinoOTA.setHostname(DEVICE_NAME);
   ArduinoOTA.setPassword(OTA_PASS);
@@ -1156,25 +1307,70 @@ void publishSensors(unsigned long now) {
 }
 
 void maintainConnections(unsigned long now) {
-  if (WiFi.status() != WL_CONNECTED && now - lastWifiReconnect > WIFI_RECONNECT_MS) {
-    lastWifiReconnect = now;
-    WiFi.reconnect();
-  }
-  if (!client.connected()) {
-    if (now - lastMqttReconnect > MQTT_RECONNECT_MS) {
-      lastMqttReconnect = now;
-      reconnectMqtt();
+  // 1. Проверяем статус подключения к домашней сети
+  if (WiFi.status() == WL_CONNECTED) {
+    // ЕСЛИ БЫЛА ВКЛЮЧЕНА ТОЧКА ДОСТУПА И СВЯЗЬ УСТАНОВЛЕНА — НЕМЕДЛЕННО ВЫКЛЮЧАЕМ ТОЧКУ ДОСТУПА!
+    if (isApMode) {
+      onWifiConnected();
     }
+    lastWifiLossTime = 0;
   } else {
-    client.loop();
+    // Сеть отключена
+    if (lastWifiLossTime == 0) lastWifiLossTime = now;
+
+    if (now - lastWifiReconnect > WIFI_RECONNECT_MS) {
+      lastWifiReconnect = now;
+      if (cfgWifiSsid.length() > 0) {
+        Serial.println("[WiFi] Попытка переподключения к основной сети...");
+        WiFi.reconnect();
+      }
+    }
+
+    // Если связь с сетью отсутствует более 45 секунд и точка еще не запущена — поднимаем AP
+    if (!isApMode && (now - lastWifiLossTime > 45000)) {
+      startConfigPortal();
+    }
+  }
+
+  // 2. В режиме точки доступа обрабатываем запросы Captive Portal
+  if (isApMode) {
+    dnsServer.processNextRequest();
+  }
+
+  // 3. Обслуживание MQTT (только если есть активное подключение к Wi-Fi)
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!client.connected()) {
+      if (now - lastMqttReconnect > MQTT_RECONNECT_MS) {
+        lastMqttReconnect = now;
+        reconnectMqtt();
+      }
+    } else {
+      client.loop();
+    }
   }
 }
 
 void renderFrame(unsigned long now) {
-  if (isOtaUpdating) return; // Во время OTA рендерит callback
+  if (isOtaUpdating) return; // Во время OTA рендерит otaProgressCallback
   if (now - lastFrame < FRAME_MS) return;
   lastFrame = now;
   fill_solid(leds, NUM_LEDS, CRGB::Black);
+
+  // Если активна точка доступа для настройки — выводим заметную индикацию "AP SETUP" и бегущий IP 192.168.4.1
+  if (isApMode) {
+    drawStringAt("AP", 1, 0, CRGB(0, 180, 255));
+    drawStringAt("SETUP", 14, 0, CRGB::Yellow);
+    drawStringAt("192.168.4.1", scrollX, 8, CRGB::White);
+    if (now - lastScroll >= 95) {
+      lastScroll = now;
+      scrollX--;
+      if (scrollX < -measureStringWidth("192.168.4.1")) {
+        scrollX = WIDTH;
+      }
+    }
+    FastLED.show();
+    return;
+  }
 
   int w = measureStringWidth(displayTime);
   drawStringAt(displayTime, (WIDTH - w) / 2, 0, colClock);
@@ -1234,7 +1430,7 @@ void loop() {
   updateBrightness(now);
   publishSensors(now);
 
-  // Автономный NTP: обновляем время каждые 10 секунд
+  // Автономный NTP: обновляем время каждые 10 секунд при наличии связи
   if (now - lastNtpCheck > 10000) {
     lastNtpCheck = now;
     if (WiFi.status() == WL_CONNECTED) {
@@ -1310,12 +1506,16 @@ spiffs,   data, spiffs,  0x3D0000,0x20000,
     filename: 'secrets.h.example',
     path: 'include/secrets.h.example',
     language: 'cpp',
-    description: 'Безопасный шаблон секретов: исключает случайную утечку паролей от Wi-Fi и брокера в открытый репозиторий',
+    description: 'Шаблон секретов с поддержкой автоматической настройки через точку доступа PixelClock-Setup и NVS',
     content: `#pragma once
 
-// Скопируйте этот файл в secrets.h и заполните своими данными.
-// secrets.h ОБЯЗАТЕЛЬНО должен быть добавлен в .gitignore!
-
+// ВАЖНО: Начиная с версии v7.2, вам больше НЕ ОБЯЗАТЕЛЬНО вручную прописывать пароли в коде!
+// 1. При первой чистой прошивке (Full Flash) часы автоматически создадут точку доступа "PixelClock-Setup" (IP 192.168.4.1).
+// 2. Подключитесь к ней с телефона и введите пароль от домашнего Wi-Fi в открывшемся окне Captive Portal.
+// 3. Данные сохранятся в энергонезависимую память NVS (Preferences) и никогда НЕ сотрутся при обновлениях с GitHub!
+// 4. Как только часы подключатся к вашему роутеру, точка доступа "PixelClock-Setup" АВТОМАТИЧЕСКИ выключится!
+//
+// Если вы все же хотите зашить дефолтные параметры в бинарник, скопируйте этот файл в include/secrets.h:
 constexpr const char* WIFI_SSID = "your_wifi_ssid";
 constexpr const char* WIFI_PASS = "your_wifi_password";
 
