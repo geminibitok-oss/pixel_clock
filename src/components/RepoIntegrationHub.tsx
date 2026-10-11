@@ -210,35 +210,47 @@ git push origin v7.1`;
             </div>
 
             {/* Why firmware wasn't created explanation */}
-            {!repoDiagnosis.hasWorkflowFile && (
-              <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-600/50 space-y-2 text-xs text-amber-200">
-                <div className="font-bold text-sm text-white flex items-center gap-2">
+            <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-600/50 space-y-3 text-xs text-amber-200">
+              <div className="font-bold text-sm text-white flex items-center justify-between">
+                <div className="flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 text-amber-400" />
-                  <span>Почему прошивка не создалась:</span>
+                  <span>Причина: сборка в коммите e4ae9c4 упала с ошибкой синтаксиса</span>
                 </div>
-                <p className="leading-relaxed">
-                  В репозитории <b className="text-white">geminibitok-oss/pixel_clock</b> сейчас лежат файлы React-приложения, но в нем <b>еще нет папки <code className="text-white font-mono">.github/workflows/</code></b> с файлом сборки. Поэтому серверы GitHub просто не получали команду запускать компиляцию PlatformIO!
-                </p>
-                <div className="pt-2 flex flex-wrap items-center gap-3">
-                  <a
-                    href={createWorkflowDirectUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg shadow-sm"
-                  >
-                    <span>Создать .github/workflows/ прямо на GitHub (в 1 клик)</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                  <button
-                    onClick={() => copyToClipboard(workflowYaml, 'yaml_popup')}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-lg border border-slate-700 cursor-pointer"
-                  >
-                    {copiedCommand === 'yaml_popup' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>Скопировать текст YAML для вставки</span>
-                  </button>
-                </div>
+                <span className="text-[10px] font-mono bg-rose-950 text-rose-300 border border-rose-800 px-2 py-0.5 rounded">
+                  Run 38124392277 failed
+                </span>
               </div>
-            )}
+              <p className="leading-relaxed">
+                На скриншоте виден коммит <b className="text-white font-mono">e4ae9c4</b>. В нем на 57-й строке файла <code className="text-white font-mono">build-and-release.yml</code> была опечатка в выражении GitHub Actions: двойные кавычки внутри кавычек. Из-за этого сервер GitHub прервал сборку до компиляции.
+              </p>
+              <div className="pt-1 flex flex-wrap items-center gap-2.5">
+                <a
+                  href="https://github.com/geminibitok-oss/pixel_clock/edit/main/.github/workflows/build-and-release.yml"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg shadow-sm"
+                >
+                  <span>1. Открыть и заменить файл build-and-release.yml на GitHub (в 1 клик)</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+                <button
+                  onClick={() => copyToClipboard(workflowYaml, 'yaml_popup')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-lg border border-slate-700 cursor-pointer"
+                >
+                  {copiedCommand === 'yaml_popup' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>2. Скопировать исправленный код YAML</span>
+                </button>
+                <a
+                  href="https://github.com/geminibitok-oss/pixel_clock/settings/actions"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-950 hover:bg-purple-900 text-purple-200 font-medium rounded-lg border border-purple-800"
+                >
+                  <span>3. Проверить права: Read and write permissions</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            </div>
           </div>
         )}
       </div>

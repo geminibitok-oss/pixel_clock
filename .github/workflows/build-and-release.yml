@@ -5,8 +5,6 @@ on:
     branches: [ "main", "master" ]
     tags:
       - "v*"
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 permissions:
@@ -29,54 +27,52 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: 📦 Cache PlatformIO & packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.platformio
-            .pio
-          key: ${{ runner.os }}-platformio-${{ hashFiles('**/platformio.ini') }}
-          restore-keys: |
-            ${{ runner.os }}-platformio-
-
       - name: 🚀 Install PlatformIO Core
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade platformio
 
-      - name: 🔐 Prepare secrets.h for compilation
+      - name: 🔐 Prepare secrets.h
+        env:
+          WIFI_SSID: ${{ secrets.WIFI_SSID }}
+          WIFI_PASS: ${{ secrets.WIFI_PASS }}
+          MQTT_SERVER: ${{ secrets.MQTT_SERVER }}
+          MQTT_USER: ${{ secrets.MQTT_USER }}
+          MQTT_PASS: ${{ secrets.MQTT_PASS }}
+          OTA_USER: ${{ secrets.OTA_USER }}
+          OTA_PASS: ${{ secrets.OTA_PASS }}
         run: |
-          # Создаем secrets.h в include и firmware/include, если они не существуют
           mkdir -p include firmware/include firmware/src src
 
-          make_secret() {
-            local target_dir="$1"
-            if [ ! -f "$target_dir/secrets.h" ]; then
-              cat << 'EOF' > "$target_dir/secrets.h"
+          SSID="${WIFI_SSID:-YourWiFi}"
+          PASS="${WIFI_PASS:-YourPass}"
+          M_SERVER="${MQTT_SERVER:-192.168.1.180}"
+          M_USER="${MQTT_USER:-mqtt_user}"
+          M_PASS="${MQTT_PASS:-mqtt_pass}"
+          O_USER="${OTA_USER:-admin}"
+          O_PASS="${OTA_PASS:-admin123}"
+
+          for dir in include firmware/include firmware/src src; do
+            cat << EOF > "$dir/secrets.h"
 #pragma once
-constexpr const char* WIFI_SSID = "${{ secrets.WIFI_SSID || "YourWiFi" }}";
-constexpr const char* WIFI_PASS = "${{ secrets.WIFI_PASS || "YourPass" }}";
-constexpr const char* MQTT_SERVER = "${{ secrets.MQTT_SERVER || "192.168.1.180" }}";
+constexpr const char* WIFI_SSID = "$SSID";
+constexpr const char* WIFI_PASS = "$PASS";
+constexpr const char* MQTT_SERVER = "$M_SERVER";
 constexpr int MQTT_PORT = 1883;
-constexpr const char* MQTT_USER = "${{ secrets.MQTT_USER || "mqtt_user" }}";
-constexpr const char* MQTT_PASS = "${{ secrets.MQTT_PASS || "mqtt_pass" }}";
-constexpr const char* OTA_USER = "${{ secrets.OTA_USER || "admin" }}";
-constexpr const char* OTA_PASS = "${{ secrets.OTA_PASS || "admin123" }}";
+constexpr const char* MQTT_USER = "$M_USER";
+constexpr const char* MQTT_PASS = "$M_PASS";
+constexpr const char* OTA_USER = "$O_USER";
+constexpr const char* OTA_PASS = "$O_PASS";
 EOF
-              echo "Created temporary secrets.h in $target_dir"
-            fi
-          }
+          done
+          echo "secrets.h prepared successfully"
 
-          make_secret "include"
-          make_secret "firmware/include"
-          make_secret "firmware/src"
-
-      - name: ⚙️ Build Firmware Binary (PlatformIO)
+      - name: ⚙️ Build Firmware (PlatformIO)
         run: |
           if [ -f "platformio.ini" ]; then
             pio run -e esp32dev
           elif [ -f "firmware/platformio.ini" ]; then
-            cd firmware && pio run -e esp32dev && cd ..
+            cd firmware && pio run -e esp32dev
           fi
 
       - name: 🔍 Locate Built Binaries
@@ -107,35 +103,20 @@ EOF
           if-no-files-found: error
           retention-days: 14
 
-      - name: 🏷️ Release on Version Tag (v*)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          files: |
-            ${{ steps.locate_bin.outputs.bin_path }}
-            ${{ steps.locate_bin.outputs.partitions_path }}
-            ${{ steps.locate_bin.outputs.bootloader_path }}
+      - name: 🏷️ Publish Release (GitHub CLI)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            TAG="latest"
+          fi
+          echo "Publishing release with tag: $TAG"
 
-      - name: 🚀 Release/Update 'latest' on Push to main
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: Latest Automated Build
-          body: |
-            Автоматическая сборка прошивки ESP32 Pixel Clock из коммита ${{ github.sha }}.
-            Бинарник `firmware.bin` готов для загрузки по воздуху (GitHub OTA).
-          draft: false
-          prerelease: false
-          files: |
-            ${{ steps.locate_bin.outputs.bin_path }}
-            ${{ steps.locate_bin.outputs.partitions_path }}
-            ${{ steps.locate_bin.outputs.bootloader_path }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          gh release create "$TAG" \
+            "${{ steps.locate_bin.outputs.bin_path }}" \
+            "${{ steps.locate_bin.outputs.partitions_path }}" \
+            "${{ steps.locate_bin.outputs.bootloader_path }}" \
+            --title "Release $TAG" \
+            --notes "Свежая сборка прошивки firmware.bin для ESP32 Pixel Clock" \
+            --clobber || echo "Release updated or created"
