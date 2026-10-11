@@ -5,12 +5,13 @@ import { MatrixSimulator } from './components/MatrixSimulator';
 import { ImprovementAudit } from './components/ImprovementAudit';
 import { GitHubActionsGuide } from './components/GitHubActionsGuide';
 import { GitHubOtaGuide } from './components/GitHubOtaGuide';
+import { RepoIntegrationHub } from './components/RepoIntegrationHub';
 import { ProjectFilesExport } from './components/ProjectFilesExport';
 import { PROJECT_FILES } from './data/projectFiles';
-import { Cpu, ShieldAlert, GitBranch, RefreshCw, Terminal } from 'lucide-react';
+import { Cpu, ShieldAlert, GitBranch, RefreshCw, Globe, FolderArchive } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('simulator');
+  const [activeTab, setActiveTab] = useState<string>('repo');
   const [isZipping, setIsZipping] = useState<boolean>(false);
 
   const handleDownloadAllZip = async () => {
@@ -28,27 +29,25 @@ export default function App() {
       }
 
       // Add a helpful README.md
-      const readme = `# ESP32 Matrix Clock (32x16 WS2812) — Upgraded v7.1
+      const readme = `# ESP32 Pixel Clock (32x16 WS2812) — geminibitok-oss/pixel_clock
 
-## Что нового в этой версии:
-1. Автономный NTP: точное время с pool.ntp.org без обязательной зависимости от топика MQTT.
-2. Прямое OTA обновление с GitHub Releases: функция GitHubOTA с поддержкой HTTPS и редиректов 302 на Amazon S3.
-3. Автосборка GitHub Actions: файл .github/workflows/build-and-release.yml автоматически компилирует firmware.bin и крепит его к релизам по тегу v*.
-4. Защита Flash-памяти: устранен износ Flash через отложенную запись NVS (debounce) и отказ от сохранения временной температуры.
-5. Защищенный secrets.h.example: реальные пароли добавлены в .gitignore для предотвращения утечки на GitHub.
-6. Home Assistant Update Entity: официальный компонент update для автоматического уведомления о новых релизах.
+Репозиторий проекта: https://github.com/geminibitok-oss/pixel_clock
 
-## Быстрый старт:
-1. Откройте проект в VS Code с расширением PlatformIO.
-2. Скопируйте include/secrets.h.example в include/secrets.h и укажите данные своей сети.
-3. Прошейте ESP32 через USB или espota.
-4. Создайте репозиторий на GitHub и отправьте код:
-   git init
+## Настроенная автосборка и GitHub OTA:
+1. Автоматическая компиляция PlatformIO в GitHub Actions (.github/workflows/build-and-release.yml).
+2. Прямое OTA обновление часов с GitHub Releases (include/GitHubOTA.h).
+3. При создании тега v7.1 на GitHub автоматически собирается firmware.bin.
+4. Часы опрашивают https://api.github.com/repos/geminibitok-oss/pixel_clock/releases/latest и сами обновляются по HTTPS (со следованием HTTP 302 редиректам на Amazon S3).
+
+## Инструкция по первому запуску автосборки:
+1. Распакуйте эти файлы в локальную папку проекта.
+2. Привяжите ваш репозиторий:
+   git remote set-url origin https://github.com/geminibitok-oss/pixel_clock.git
+3. Закоммитьте изменения:
    git add .
-   git commit -m "Initial commit"
-   git remote add origin https://github.com/ВАШ_ЛОГИН/esp32-matrix-clock.git
-   git push -u origin main
-5. Для выпуска обновления скомпилируйте релиз:
+   git commit -m "feat: настройка автосборки GitHub Actions и OTA"
+   git push origin main
+4. Создайте тег для первой сборки:
    git tag v7.1
    git push origin v7.1
 `;
@@ -58,7 +57,7 @@ export default function App() {
       const url = URL.createObjectURL(content);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'esp32_matrix_clock_v7.1_complete.zip';
+      link.download = 'pixel_clock_geminibitok_oss_v7.1.zip';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -83,38 +82,38 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Context Quick Bar */}
-        <div className="mb-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="mb-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <button
-            onClick={() => setActiveTab('simulator')}
+            onClick={() => setActiveTab('repo')}
             className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-              activeTab === 'simulator'
-                ? 'bg-[#121822] border-emerald-500/50 shadow-sm'
+              activeTab === 'repo'
+                ? 'bg-[#121822] border-emerald-500/50 shadow-sm ring-1 ring-emerald-500/20'
                 : 'bg-[#0d1218] border-slate-800/80 hover:bg-[#111720]'
             }`}
           >
             <div className="flex items-center gap-2 mb-1">
-              <Cpu className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-semibold text-white">Матрица 32×16</span>
+              <Globe className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs font-semibold text-white truncate">pixel_clock GitHub</span>
             </div>
-            <div className="text-[11px] text-slate-400">
-              WS2812 · FastLED · Шрифт RusFont
+            <div className="text-[11px] text-slate-400 truncate">
+              geminibitok-oss · Релиз и OTA
             </div>
           </button>
 
           <button
-            onClick={() => setActiveTab('audit')}
+            onClick={() => setActiveTab('simulator')}
             className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-              activeTab === 'audit'
-                ? 'bg-[#121822] border-emerald-500/50 shadow-sm'
+              activeTab === 'simulator'
+                ? 'bg-[#121822] border-emerald-500/50 shadow-sm ring-1 ring-emerald-500/20'
                 : 'bg-[#0d1218] border-slate-800/80 hover:bg-[#111720]'
             }`}
           >
             <div className="flex items-center gap-2 mb-1">
-              <ShieldAlert className="w-4 h-4 text-rose-400" />
-              <span className="text-xs font-semibold text-white">Аудит и улучшения</span>
+              <Cpu className="w-4 h-4 text-cyan-400" />
+              <span className="text-xs font-semibold text-white truncate">Эмулятор 32×16</span>
             </div>
-            <div className="text-[11px] text-slate-400">
-              NTP · NVS износ · Защита секретов
+            <div className="text-[11px] text-slate-400 truncate">
+              WS2812 · FastLED · RusFont
             </div>
           </button>
 
@@ -122,38 +121,56 @@ export default function App() {
             onClick={() => setActiveTab('actions')}
             className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
               activeTab === 'actions'
-                ? 'bg-[#121822] border-emerald-500/50 shadow-sm'
+                ? 'bg-[#121822] border-emerald-500/50 shadow-sm ring-1 ring-emerald-500/20'
                 : 'bg-[#0d1218] border-slate-800/80 hover:bg-[#111720]'
             }`}
           >
             <div className="flex items-center gap-2 mb-1">
-              <GitBranch className="w-4 h-4 text-cyan-400" />
-              <span className="text-xs font-semibold text-white">Автосборка CI/CD</span>
+              <GitBranch className="w-4 h-4 text-amber-400" />
+              <span className="text-xs font-semibold text-white truncate">GitHub Actions</span>
             </div>
-            <div className="text-[11px] text-slate-400">
-              PlatformIO · Actions · Releases
+            <div className="text-[11px] text-slate-400 truncate">
+              CI/CD · pio run · firmware.bin
             </div>
           </button>
 
           <button
-            onClick={() => setActiveTab('ota')}
+            onClick={() => setActiveTab('audit')}
             className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-              activeTab === 'ota'
-                ? 'bg-[#121822] border-emerald-500/50 shadow-sm'
+              activeTab === 'audit'
+                ? 'bg-[#121822] border-emerald-500/50 shadow-sm ring-1 ring-emerald-500/20'
                 : 'bg-[#0d1218] border-slate-800/80 hover:bg-[#111720]'
             }`}
           >
             <div className="flex items-center gap-2 mb-1">
-              <RefreshCw className="w-4 h-4 text-purple-400" />
-              <span className="text-xs font-semibold text-white">Обновление с GitHub</span>
+              <ShieldAlert className="w-4 h-4 text-rose-400" />
+              <span className="text-xs font-semibold text-white truncate">Аудит и улучшения</span>
             </div>
-            <div className="text-[11px] text-slate-400">
-              HTTPS 302 Redirects · Dual OTA
+            <div className="text-[11px] text-slate-400 truncate">
+              NTP · NVS износ · Безопасность
+            </div>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('files')}
+            className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+              activeTab === 'files'
+                ? 'bg-[#121822] border-emerald-500/50 shadow-sm ring-1 ring-emerald-500/20'
+                : 'bg-[#0d1218] border-slate-800/80 hover:bg-[#111720]'
+            }`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <FolderArchive className="w-4 h-4 text-purple-400" />
+              <span className="text-xs font-semibold text-white truncate">Файлы проекта</span>
+            </div>
+            <div className="text-[11px] text-slate-400 truncate">
+              Готовый код · Скачать ZIP
             </div>
           </button>
         </div>
 
         {/* View Content Switcher */}
+        {activeTab === 'repo' && <RepoIntegrationHub />}
         {activeTab === 'simulator' && <MatrixSimulator />}
         {activeTab === 'audit' && <ImprovementAudit />}
         {activeTab === 'actions' && <GitHubActionsGuide />}

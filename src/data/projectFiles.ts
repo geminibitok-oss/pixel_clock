@@ -201,6 +201,10 @@ public:
       }
     }
 
+    if (downloadUrl.length() == 0) {
+      downloadUrl = "https://github.com/" + _owner + "/" + _repo + "/releases/latest/download/" + _binName;
+    }
+
     // Сравниваем версии
     if (newVersion != String(currentVersion)) {
       Serial.printf("[GitHubOTA] Найдена новая версия: %s (текущая: %s)\\n", newVersion.c_str(), currentVersion);
@@ -295,8 +299,8 @@ public:
   }
 
 private:
-  static inline String _owner = "your-github-username";
-  static inline String _repo = "esp32-matrix-clock";
+  static inline String _owner = "geminibitok-oss";
+  static inline String _repo = "pixel_clock";
   static inline String _binName = "firmware.bin";
 };
 `
@@ -326,9 +330,9 @@ constexpr const char* DEVICE_NAME = "esp32_matrix";
 constexpr const char* DEVICE_FRIENDLY_NAME = "Matrix Display";
 constexpr const char* FIRMWARE_VERSION = "7.1"; // Обновленная версия
 
-// Репозиторий GitHub для OTA обновлений (укажите ваш логин и имя репозитория!)
-constexpr const char* GITHUB_OWNER = "your-github-user";
-constexpr const char* GITHUB_REPO  = "esp32-matrix-clock";
+// Репозиторий GitHub для OTA обновлений
+constexpr const char* GITHUB_OWNER = "geminibitok-oss";
+constexpr const char* GITHUB_REPO  = "pixel_clock";
 
 constexpr uint8_t LED_PIN = 18;
 constexpr uint8_t WIDTH = 32;

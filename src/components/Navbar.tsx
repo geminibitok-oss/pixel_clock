@@ -16,9 +16,9 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const navItems = [
     { id: 'simulator', label: 'Эмулятор 32×16' },
+    { id: 'repo', label: 'Репозиторий pixel_clock' },
     { id: 'audit', label: 'Аудит и улучшения' },
-    { id: 'actions', label: 'GitHub CI/CD' },
-    { id: 'ota', label: 'Обновление с GitHub' },
+    { id: 'actions', label: 'GitHub Actions' },
     { id: 'files', label: 'Файлы проекта' },
   ];
 
