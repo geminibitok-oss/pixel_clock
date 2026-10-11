@@ -86,22 +86,36 @@ jobs:
             echo "Created temporary include/secrets.h for compilation"
           fi
 
-      - name: ⚙️ Build Firmware Binary
+      - name: ⚙️ Build Firmware Binary (PlatformIO)
         run: |
-          pio run -e esp32dev
+          if [ -f "platformio.ini" ]; then
+            pio run -e esp32dev
+          elif [ -f "firmware/platformio.ini" ]; then
+            cd firmware && pio run -e esp32dev && cd ..
+          fi
+
+      - name: 🔍 Locate Built Binaries
+        id: locate_bin
+        run: |
+          BIN_PATH=$(find .pio -name "firmware.bin" | head -n 1)
+          echo "bin_path=$BIN_PATH" >> "$GITHUB_OUTPUT"
+          BOOTLOADER_PATH=$(find .pio -name "bootloader.bin" | head -n 1)
+          echo "bootloader_path=$BOOTLOADER_PATH" >> "$GITHUB_OUTPUT"
+          PARTITIONS_PATH=$(find .pio -name "partitions.bin" | head -n 1)
+          echo "partitions_path=$PARTITIONS_PATH" >> "$GITHUB_OUTPUT"
 
       - name: 📦 Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: esp32-matrix-firmware
+          name: esp32-pixel-clock-firmware
           path: |
-            .pio/build/esp32dev/firmware.bin
-            .pio/build/esp32dev/partitions.bin
-            .pio/build/esp32dev/bootloader.bin
+            \${{ steps.locate_bin.outputs.bin_path }}
+            \${{ steps.locate_bin.outputs.partitions_path }}
+            \${{ steps.locate_bin.outputs.bootloader_path }}
           if-no-files-found: error
           retention-days: 14
 
-      - name: 🏷️ Create GitHub Release (Only on tags v*)
+      - name: 🏷️ Release on Version Tag (v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -110,9 +124,27 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            .pio/build/esp32dev/firmware.bin
-            .pio/build/esp32dev/partitions.bin
-            .pio/build/esp32dev/bootloader.bin
+            \${{ steps.locate_bin.outputs.bin_path }}
+            \${{ steps.locate_bin.outputs.partitions_path }}
+            \${{ steps.locate_bin.outputs.bootloader_path }}
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🚀 Release/Update 'latest' on Push to main
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Automated Build
+          body: |
+            Автоматическая сборка прошивки ESP32 Pixel Clock из коммита \${{ github.sha }}.
+            Бинарник firmware.bin готов для загрузки по воздуху (GitHub OTA).
+          draft: false
+          prerelease: false
+          files: |
+            \${{ steps.locate_bin.outputs.bin_path }}
+            \${{ steps.locate_bin.outputs.partitions_path }}
+            \${{ steps.locate_bin.outputs.bootloader_path }}
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
 `

@@ -1,29 +1,37 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   GitBranch, Check, Copy, ExternalLink, RefreshCw, 
   Terminal, Sparkles, CheckCircle2, AlertCircle, FileDown, 
-  Globe, ShieldCheck, Box
+  Globe, ShieldCheck, Box, AlertTriangle, ArrowRight
 } from 'lucide-react';
+import { PROJECT_FILES } from '../data/projectFiles';
 
 export const RepoIntegrationHub: React.FC = () => {
   const repoOwner = 'geminibitok-oss';
   const repoName = 'pixel_clock';
   const repoUrl = `https://github.com/${repoOwner}/${repoName}`;
   const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/releases/latest`;
+  const actionsRunsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/actions/runs`;
   const directDownloadUrl = `https://github.com/${repoOwner}/${repoName}/releases/latest/download/firmware.bin`;
+  const createWorkflowDirectUrl = `https://github.com/${repoOwner}/${repoName}/new/main?filename=.github/workflows/build-and-release.yml`;
 
   const [isChecking, setIsChecking] = useState(false);
-  const [checkResult, setCheckResult] = useState<{
-    status: 'idle' | 'success' | 'no_releases' | 'not_found' | 'error';
-    tagName?: string;
-    publishedAt?: string;
-    hasFirmwareBin?: boolean;
-    assetsCount?: number;
-    downloadUrl?: string;
-    message?: string;
-  }>({ status: 'idle' });
-
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
+  const [repoDiagnosis, setRepoDiagnosis] = useState<{
+    hasWorkflowFile: boolean;
+    hasPartitionFile: boolean;
+    runsCount: number;
+    latestRunStatus?: string;
+    latestReleaseTag?: string;
+    checked: boolean;
+  }>({
+    hasWorkflowFile: false,
+    hasPartitionFile: false,
+    runsCount: 0,
+    checked: false,
+  });
+
+  const workflowYaml = PROJECT_FILES.find(f => f.id === 'github_workflow')?.content || '';
 
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -31,64 +39,84 @@ export const RepoIntegrationHub: React.FC = () => {
     setTimeout(() => setCopiedCommand(null), 2000);
   };
 
-  const checkGitHubReleases = async () => {
+  const runDiagnosis = async () => {
     setIsChecking(true);
     try {
-      const response = await fetch(apiUrl, {
-        headers: {
-          Accept: 'application/vnd.github.v3+json',
-        },
-      });
-
-      if (response.status === 200) {
-        const data = await response.json();
-        const assets = data.assets || [];
-        const binAsset = assets.find((a: { name: string }) => a.name === 'firmware.bin');
-
-        setCheckResult({
-          status: 'success',
-          tagName: data.tag_name,
-          publishedAt: new Date(data.published_at).toLocaleString('ru-RU'),
-          hasFirmwareBin: !!binAsset,
-          assetsCount: assets.length,
-          downloadUrl: binAsset?.browser_download_url || directDownloadUrl,
-        });
-      } else if (response.status === 404) {
-        // Either no releases exist yet, or repo is private / empty
-        setCheckResult({
-          status: 'no_releases',
-          message: 'Релизов пока не создано или репозиторий приватный. Создайте первый тег v7.1 с помощью команд ниже!',
-        });
-      } else {
-        setCheckResult({
-          status: 'error',
-          message: `Ответ GitHub API: HTTP ${response.status}. Возможно превышен лимит запросов без авторизации.`,
-        });
+      // 1. Check if .github/workflows/build-and-release.yml exists
+      let hasWorkflow = false;
+      try {
+        const wfRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/.github/workflows/build-and-release.yml`);
+        hasWorkflow = wfRes.status === 200;
+      } catch {
+        hasWorkflow = false;
       }
-    } catch {
-      setCheckResult({
-        status: 'error',
-        message: 'Не удалось выполнить запрос к GitHub API. Проверьте интернет-соединение.',
+
+      // 2. Check if min_spiffs.csv or platformio.ini exists
+      let hasPart = false;
+      try {
+        const partRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/min_spiffs.csv`);
+        hasPart = partRes.status === 200;
+      } catch {
+        hasPart = false;
+      }
+
+      // 3. Check actions runs
+      let runsCount = 0;
+      let latestRunStatus: string | undefined;
+      try {
+        const runsRes = await fetch(actionsRunsUrl);
+        if (runsRes.status === 200) {
+          const runsData = await runsRes.json();
+          runsCount = runsData.total_count || 0;
+          if (runsData.workflow_runs && runsData.workflow_runs.length > 0) {
+            const latest = runsData.workflow_runs[0];
+            latestRunStatus = `${latest.conclusion || latest.status} (${latest.name})`;
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 4. Check release
+      let releaseTag: string | undefined;
+      try {
+        const relRes = await fetch(apiUrl);
+        if (relRes.status === 200) {
+          const relData = await relRes.json();
+          releaseTag = relData.tag_name;
+        }
+      } catch {
+        // ignore
+      }
+
+      setRepoDiagnosis({
+        hasWorkflowFile: hasWorkflow,
+        hasPartitionFile: hasPart,
+        runsCount,
+        latestRunStatus,
+        latestReleaseTag: releaseTag,
+        checked: true,
       });
     } finally {
       setIsChecking(false);
     }
   };
 
-  const gitPushScript = `# 1. Перейдите в папку вашего проекта
-cd /путь/к/проекту
+  useEffect(() => {
+    runDiagnosis();
+  }, []);
 
-# 2. Убедитесь, что удаленный репозиторий настроен на pixel_clock:
-git remote set-url origin https://github.com/geminibitok-oss/pixel_clock.git
+  const gitPushScript = `# 1. Перейдите в терминале в корень вашего проекта
+cd /путь/к/папке/проекта
 
-# 3. Добавьте обновленные файлы (Actions, GitHubOTA.h, и т.д.):
+# 2. Добавьте файл воркфлоу и файлы прошивки:
 git add .
-git commit -m "feat: настроена автосборка в GitHub Actions и OTA-обновление"
+git commit -m "feat: добавить автосборку прошивки и GitHub Actions"
 
-# 4. Отправьте код в основную ветку:
+# 3. Отправьте изменения на GitHub в ветку main:
 git push origin main
 
-# 5. Выпустите первый релиз v7.1 (это запустит сборку и публикацию прошивки!):
+# 4. Создайте тег релиза (или сборка начнется сразу по пушу в main!):
 git tag v7.1
 git push origin v7.1`;
 
@@ -108,7 +136,7 @@ git push origin v7.1`;
               <span>geminibitok-oss / pixel_clock</span>
             </h1>
             <p className="text-xs sm:text-sm text-slate-300">
-              Прошивка автоматически компилируется при создании тегов версий и забирается часами ESP32 по HTTPS.
+              Мониторинг автоматической сборки прошивки на серверах GitHub и доставки обновлений по воздуху.
             </p>
           </div>
 
@@ -120,71 +148,94 @@ git push origin v7.1`;
               className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors border border-slate-700"
             >
               <ExternalLink className="w-3.5 h-3.5" />
-              <span>Открыть на GitHub</span>
+              <span>Репозиторий на GitHub</span>
             </a>
 
             <button
-              onClick={checkGitHubReleases}
+              onClick={runDiagnosis}
               disabled={isChecking}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors cursor-pointer shadow-sm disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isChecking ? 'animate-spin' : ''}`} />
-              <span>{isChecking ? 'Опрос GitHub...' : 'Проверить статус релиза'}</span>
+              <span>{isChecking ? 'Диагностика...' : 'Обновить статус'}</span>
             </button>
           </div>
         </div>
 
-        {/* Live Status Response Box */}
-        {checkResult.status !== 'idle' && (
-          <div className="mt-5 pt-4 border-t border-slate-800/80">
-            {checkResult.status === 'success' && (
-              <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/40 flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                <div className="space-y-1 text-xs text-slate-200">
-                  <div className="text-sm font-bold text-white flex items-center gap-2">
-                    <span>Найден активный релиз: {checkResult.tagName}</span>
-                    <span className="text-[10px] bg-emerald-900 text-emerald-300 px-2 py-0.5 rounded font-mono">
-                      АКТИВЕН
-                    </span>
-                  </div>
-                  <p className="text-slate-400">
-                    Опубликован: {checkResult.publishedAt} · Файлов в релизе: {checkResult.assetsCount}
-                  </p>
-                  <div className="pt-2 flex items-center gap-3">
-                    <span className="text-emerald-400 font-medium">
-                      {checkResult.hasFirmwareBin ? '✓ firmware.bin готов к OTA скачиванию' : '⚠️ firmware.bin не найден среди файлов'}
-                    </span>
-                    <a
-                      href={checkResult.downloadUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-cyan-400 hover:underline flex items-center gap-1"
-                    >
-                      <span>Скачать бинарник напрямую</span>
-                      <FileDown className="w-3.5 h-3.5" />
-                    </a>
+        {/* Live Diagnostics Card */}
+        {repoDiagnosis.checked && (
+          <div className="mt-6 pt-5 border-t border-slate-800 space-y-4">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Результат онлайн-диагностики репозитория:
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div className={`p-3.5 rounded-xl border flex items-center gap-2.5 ${
+                repoDiagnosis.hasWorkflowFile
+                  ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
+                  : 'bg-rose-950/30 border-rose-800/60 text-rose-300'
+              }`}>
+                {repoDiagnosis.hasWorkflowFile ? <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" /> : <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />}
+                <div>
+                  <div className="font-semibold">Файл .github/workflows/</div>
+                  <div className="text-[11px] opacity-80">
+                    {repoDiagnosis.hasWorkflowFile ? 'Обнаружен в репозитории' : 'Не найден в pixel_clock'}
                   </div>
                 </div>
               </div>
-            )}
 
-            {checkResult.status === 'no_releases' && (
-              <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-600/40 flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                <div className="space-y-1 text-xs text-slate-200">
-                  <div className="text-sm font-bold text-white">Релизы еще не созданы в pixel_clock</div>
-                  <p className="text-slate-300">
-                    {checkResult.message}
-                  </p>
+              <div className="p-3.5 rounded-xl border bg-slate-900 border-slate-800 text-slate-300 flex items-center gap-2.5">
+                <GitBranch className="w-4 h-4 shrink-0 text-cyan-400" />
+                <div>
+                  <div className="font-semibold">Запусков Actions: {repoDiagnosis.runsCount}</div>
+                  <div className="text-[11px] text-slate-400">
+                    {repoDiagnosis.latestRunStatus || 'Еще не запускались'}
+                  </div>
                 </div>
               </div>
-            )}
 
-            {checkResult.status === 'error' && (
-              <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
-                <div className="text-xs text-slate-300">
-                  {checkResult.message}
+              <div className={`p-3.5 rounded-xl border flex items-center gap-2.5 ${
+                repoDiagnosis.latestReleaseTag
+                  ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
+                  : 'bg-amber-950/30 border-amber-800/60 text-amber-300'
+              }`}>
+                <Box className="w-4 h-4 shrink-0 text-amber-400" />
+                <div>
+                  <div className="font-semibold">Релиз прошивки</div>
+                  <div className="text-[11px] opacity-80">
+                    {repoDiagnosis.latestReleaseTag ? `Версия: ${repoDiagnosis.latestReleaseTag}` : 'Релиз еще не создан'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Why firmware wasn't created explanation */}
+            {!repoDiagnosis.hasWorkflowFile && (
+              <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-600/50 space-y-2 text-xs text-amber-200">
+                <div className="font-bold text-sm text-white flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-400" />
+                  <span>Почему прошивка не создалась:</span>
+                </div>
+                <p className="leading-relaxed">
+                  В репозитории <b className="text-white">geminibitok-oss/pixel_clock</b> сейчас лежат файлы React-приложения, но в нем <b>еще нет папки <code className="text-white font-mono">.github/workflows/</code></b> с файлом сборки. Поэтому серверы GitHub просто не получали команду запускать компиляцию PlatformIO!
+                </p>
+                <div className="pt-2 flex flex-wrap items-center gap-3">
+                  <a
+                    href={createWorkflowDirectUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg shadow-sm"
+                  >
+                    <span>Создать .github/workflows/ прямо на GitHub (в 1 клик)</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                  <button
+                    onClick={() => copyToClipboard(workflowYaml, 'yaml_popup')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-lg border border-slate-700 cursor-pointer"
+                  >
+                    {copiedCommand === 'yaml_popup' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>Скопировать текст YAML для вставки</span>
+                  </button>
                 </div>
               </div>
             )}
@@ -192,26 +243,77 @@ git push origin v7.1`;
         )}
       </div>
 
-      {/* Step-by-Step Execution Plan */}
+      {/* 2 Ways to Trigger Build */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left Column: Terminal commands to publish first release */}
-        <div className="bg-[#0e131a] p-5 rounded-2xl border border-slate-800 space-y-4 flex flex-col">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        {/* Method 1: Web Interface GitHub in 1 minute */}
+        <div className="bg-[#0e131a] p-5 rounded-2xl border border-slate-800 space-y-4">
+          <div className="pb-3 border-b border-slate-800 flex items-center justify-between">
             <div className="flex items-center gap-2 text-white font-semibold text-sm">
-              <Terminal className="w-4 h-4 text-emerald-400" />
-              <span>Команды для терминала (запуск автосборки)</span>
+              <Globe className="w-4 h-4 text-emerald-400" />
+              <span>Способ 1. Без терминала (прямо на сайте GitHub)</span>
+            </div>
+            <span className="text-[11px] font-mono text-emerald-400 uppercase bg-emerald-950 px-2 py-0.5 rounded">
+              Быстрее всего
+            </span>
+          </div>
+
+          <ol className="list-decimal list-inside space-y-2 text-xs text-slate-300 leading-relaxed">
+            <li>
+              Нажмите кнопку:
+              <a
+                href={createWorkflowDirectUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-emerald-400 hover:underline font-semibold ml-1.5"
+              >
+                <span>Создать файл воркфлоу на GitHub</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </li>
+            <li>
+              В поле имени файла введите:
+              <code className="text-white bg-slate-900 px-1.5 py-0.5 rounded ml-1 font-mono">
+                .github/workflows/build-and-release.yml
+              </code>
+            </li>
+            <li>
+              Скопируйте готовый YAML код ниже и вставьте его в редактор на сайте.
+            </li>
+            <li>
+              Внизу страницы нажмите зеленую кнопку <b className="text-white">«Commit changes...»</b>.
+            </li>
+            <li>
+              Перейдите во вкладку <b className="text-white">Settings</b> → <b className="text-white">Actions</b> → <b className="text-white">General</b> и внизу в разделе <b className="text-white">Workflow permissions</b> выберите <b className="text-emerald-400">Read and write permissions</b>.
+            </li>
+          </ol>
+
+          <button
+            onClick={() => copyToClipboard(workflowYaml, 'yaml_box')}
+            className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-xl transition-colors cursor-pointer shadow-sm"
+          >
+            {copiedCommand === 'yaml_box' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            <span>{copiedCommand === 'yaml_box' ? 'YAML код скопирован!' : 'Скопировать код YAML для GitHub'}</span>
+          </button>
+        </div>
+
+        {/* Method 2: Terminal */}
+        <div className="bg-[#0e131a] p-5 rounded-2xl border border-slate-800 space-y-4 flex flex-col">
+          <div className="pb-3 border-b border-slate-800 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-white font-semibold text-sm">
+              <Terminal className="w-4 h-4 text-cyan-400" />
+              <span>Способ 2. Через Git в терминале</span>
             </div>
             <button
               onClick={() => copyToClipboard(gitPushScript, 'full_script')}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-emerald-400 bg-emerald-950/60 hover:bg-emerald-900 rounded-md border border-emerald-800/80 transition-colors cursor-pointer"
             >
               {copiedCommand === 'full_script' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>Скопировать всё</span>
+              <span>Копировать команды</span>
             </button>
           </div>
 
           <p className="text-xs text-slate-400 leading-relaxed">
-            Выполните эти команды один раз в терминале вашего проекта. Создание тега <code className="text-emerald-400 font-mono">v7.1</code> автоматически инициирует GitHub Actions для репозитория <b className="text-slate-200">geminibitok-oss/pixel_clock</b>:
+            Если вы скачали ZIP-архив проекта, распакуйте его в папку репозитория и выполните эти команды:
           </p>
 
           <pre className="p-4 rounded-xl bg-[#080b0f] border border-slate-800/80 text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed flex-1">
@@ -219,69 +321,36 @@ git push origin v7.1`;
           </pre>
 
           <div className="p-3 bg-[#111722] rounded-xl border border-slate-800 text-xs text-slate-400 space-y-1">
-            <span className="text-emerald-400 font-semibold block">Что произойдет на серверах GitHub:</span>
-            <div>1. Запустится виртуальная машина Ubuntu в GitHub Actions.</div>
-            <div>2. PlatformIO скомпилирует <code className="text-white font-mono">.pio/build/esp32dev/firmware.bin</code>.</div>
-            <div>3. Создастся релиз на странице <code className="text-white font-mono">/releases/tag/v7.1</code>.</div>
+            <span className="text-cyan-400 font-semibold block">⚡ Обновленная логика автосборки:</span>
+            <div>
+              Теперь сборка запускается <b>не только по тегам</b>, но и при <b>каждом пуше в ветку main</b>, автоматически обновляя релиз <code className="text-emerald-400 font-mono">latest</code>!
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Right Column: How the Clock pulls the update */}
-        <div className="bg-[#0e131a] p-5 rounded-2xl border border-slate-800 space-y-4">
-          <div className="pb-3 border-b border-slate-800 flex items-center gap-2 text-white font-semibold text-sm">
-            <Globe className="w-4 h-4 text-cyan-400" />
-            <span>Как часы обновляются с pixel_clock</span>
+      {/* Critical Setting Reminder: Workflow Permissions */}
+      <div className="bg-[#0e131a] p-5 rounded-2xl border border-slate-800 flex items-start gap-4">
+        <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400 shrink-0 mt-0.5">
+          <ShieldCheck className="w-6 h-6" />
+        </div>
+        <div className="space-y-1.5 text-xs text-slate-300">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <span>Важная настройка на GitHub: Права на запись для Actions</span>
+            <span className="text-[10px] bg-purple-950 text-purple-300 px-2 py-0.5 rounded font-mono">
+              ОБЯЗАТЕЛЬНО
+            </span>
+          </h3>
+          <p className="leading-relaxed">
+            В новых репозиториях GitHub по умолчанию запрещает автоматическим скриптам создавать Релизы.
+            Чтобы сборка успешно создала файл в релизах, откройте:
+          </p>
+          <div className="font-mono text-emerald-400 bg-[#080b0f] p-2.5 rounded-lg border border-slate-800">
+            {repoUrl}/settings/actions
           </div>
-
-          <div className="space-y-3 text-xs">
-            {/* Step A */}
-            <div className="p-3.5 rounded-xl bg-[#080b0f] border border-slate-800 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-white flex items-center gap-1.5">
-                  <Box className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>1. Проверка версии через GitHub API</span>
-                </span>
-                <span className="text-[10px] text-slate-500 font-mono">HTTPS GET</span>
-              </div>
-              <code className="text-[11px] text-slate-400 block bg-[#0c1015] p-2 rounded break-all font-mono">
-                {apiUrl}
-              </code>
-              <p className="text-slate-400">
-                ESP32 сравнивает <code className="text-emerald-400">"tag_name"</code> в JSON с текущей версией в коде (<code className="text-white">FIRMWARE_VERSION = "7.0"</code>). Если на GitHub лежит <code className="text-emerald-400">7.1</code> — запускается скачивание.
-              </p>
-            </div>
-
-            {/* Step B */}
-            <div className="p-3.5 rounded-xl bg-[#080b0f] border border-slate-800 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-white flex items-center gap-1.5">
-                  <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>2. Скачивание firmware.bin (302 Redirect)</span>
-                </span>
-                <span className="text-[10px] text-slate-500 font-mono">AWS S3 CDN</span>
-              </div>
-              <code className="text-[11px] text-slate-400 block bg-[#0c1015] p-2 rounded break-all font-mono">
-                {directDownloadUrl}
-              </code>
-              <p className="text-slate-400">
-                Модуль <code className="text-white font-mono">GitHubOTA.h</code> переходит по редиректу 302 на Amazon S3 и чанками по 1 Кб прошивает Flash-память.
-              </p>
-            </div>
-
-            {/* Step C */}
-            <div className="p-3.5 rounded-xl bg-[#080b0f] border border-slate-800 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-white flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                  <span>3. Индикация на светодиодах и перезагрузка</span>
-                </span>
-                <span className="text-[10px] text-emerald-400 font-mono">32×16 LED</span>
-              </div>
-              <p className="text-slate-400">
-                Во время прошивки на часах горит шкала <b className="text-emerald-400">OTA 0% → 100%</b>, после чего ESP32 перезагружается в слот <code className="text-white font-mono">app1</code> уже на новой версии прошивки.
-              </p>
-            </div>
-          </div>
+          <p className="text-slate-400">
+            Прокрутите вниз до раздела <b className="text-white">Workflow permissions</b> и переключите чекбокс на <b className="text-white">«Read and write permissions»</b> → нажмите <b className="text-white">Save</b>.
+          </p>
         </div>
       </div>
     </div>
