@@ -1,0 +1,6 @@
+{
+  "name": "ESP32 Matrix Clock Studio & GitHub OTA",
+  "description": "Интерактивный эмулятор часов 32x16 WS2812, аудит кода ESP32, настройка GitHub Actions CI/CD и прямое OTA-обновление прошивки с GitHub Releases.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
